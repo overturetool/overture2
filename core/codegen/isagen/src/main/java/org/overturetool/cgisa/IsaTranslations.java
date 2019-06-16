@@ -25,12 +25,8 @@ import java.io.StringWriter;
 import java.util.*;
 
 import org.overture.ast.definitions.AImplicitFunctionDefinition;
-import org.overture.ast.definitions.ATypeDefinition;
-import org.overture.ast.types.ANamedInvariantType;
-import org.overture.ast.types.ASeqSeqType;
-import org.overture.ast.types.ATokenBasicType;
-import org.overture.ast.types.SBasicType;
 import org.overture.codegen.ir.INode;
+import org.overture.codegen.ir.SDeclIR;
 import org.overture.codegen.ir.SExpIR;
 import org.overture.codegen.ir.SMultipleBindIR;
 import org.overture.codegen.ir.STypeIR;
@@ -40,8 +36,11 @@ import org.overture.codegen.ir.declarations.AFormalParamLocalParamIR;
 import org.overture.codegen.ir.declarations.AFuncDeclIR;
 import org.overture.codegen.ir.declarations.ANamedTypeDeclIR;
 import org.overture.codegen.ir.declarations.ARecordDeclIR;
+import org.overture.codegen.ir.declarations.AStateDeclIR;
 import org.overture.codegen.ir.declarations.ATypeDeclIR;
 import org.overture.codegen.ir.expressions.AApplyExpIR;
+import org.overture.codegen.ir.expressions.AIdentifierVarExpIR;
+import org.overture.codegen.ir.expressions.ANewExpIR;
 import org.overture.codegen.ir.types.*;
 import org.overture.codegen.ir.SourceNode;
 import org.overture.codegen.merging.MergeVisitor;
@@ -49,12 +48,13 @@ import org.overture.codegen.merging.TemplateCallable;
 import org.overture.codegen.merging.TemplateManager;
 import org.overturetool.cgisa.utils.IsMethodTypeVisitor;
 import org.overturetool.cgisa.utils.IsSeqOfCharTypeVisitor;
+import org.overturetool.cgisa.utils.IsaSymbolFinder;
 
 public class IsaTranslations {
 
     private static final String TEMPLATE_CALLABLE_NAME = "Isa";
-    private static final String TYPE_PARAM_SEP = " and ";
-    private static final String LIST_SEP = ", ";
+    private static final String TYPE_PARAM_SEP = " \\<Rightarrow> ";
+    private static final String LIST_SEP = ",";
     private static final String TUPLE_TYPE_SEPARATOR = "*";
     private static final String ISA_TEMPLATE_ROOT = "IsaTemplates";
     private MergeVisitor mergeVisitor;
@@ -76,16 +76,74 @@ public class IsaTranslations {
     public String trans(INode node) throws AnalysisException {
         StringWriter writer = new StringWriter();
         node.apply(mergeVisitor, writer);
-//        AIntNumericBasicTypeIR node1 = (AIntNumericBasicTypeIR) node;
-//        node1.getNamedInvType()getNamedInvType().getName().getName();
-        return writer.toString();
+        return writer.toString().replace("true", "True");//hack around lower cased trues;
     }
 
-    public String transApplyParams(List<SExpIR> params)
+   
+    public String transUnion(STypeIR node) throws AnalysisException {
+        return trans(node).replace("<", "").replace(">", "");//hack around lower cased trues;
+    }
+    
+    
+    
+    public String transState(AStateDeclIR node) throws AnalysisException {
+    	StringBuilder sb = new StringBuilder();
+    	sb.append(" ");
+    	if (node != null) {
+	    	if (node.getInitDecl() != null) {
+	    		sb.append(trans(node.getInitDecl()) + "\n");
+	    	}
+	    	if (node.getInvDecl() != null) {
+	    		sb.append(trans(node.getInvDecl()) + "\n");
+	    	}
+    	}
+    	return sb.toString();
+    }
+    
+	public String transApplyParams(List<SExpIR> params)
             throws AnalysisException {
-        return transNodeList(params, LIST_SEP);
+        return transNodeList(params, " ");
     }
 
+	public String transMkArgs(ANewExpIR node) {
+		String str = new String();
+		List<SExpIR> args = new ArrayList<SExpIR>();
+		args = node.getArgs();
+		List<AFieldDeclIR> f = new ArrayList<AFieldDeclIR>();
+		SDeclIR rs = IsaGen.declGenHistoryMap.get(((ARecordTypeIR) 
+					node.getType().clone()).getName().toString());
+		
+		
+		if (rs instanceof AStateDeclIR) 
+		{
+			AStateDeclIR state = (AStateDeclIR) rs.clone();
+			f = state.getFields();
+			for (int i = 0; i < f.size(); i++)
+			{
+				str = str + state.getName().toString().substring(0,1).toLowerCase() 
+						+ state.getName().toString().substring(1) + "_"
+						+ (f.get(i).getName() + " = " + args.get(i).toString());
+				if (i < f.size()-1) str = str + (", ");
+			}
+		}
+		else
+		{
+			ARecordDeclIR rec = (ARecordDeclIR) rs.clone();
+			f = rec.getFields();
+			for (int i = 0; i < f.size(); i++)
+			{
+				str = str + rec.getName().toString().substring(0,1).toLowerCase() 
+						+ rec.getName().toString().substring(1) + "_"
+						+ (f.get(i).getName() + " = " + args.get(i).toString());
+				if (i < f.size()-1) str = str + (", ");
+			}
+		}
+			
+		
+		
+		return str;
+	}
+	
     public String transTypeParams(List<AFormalParamLocalParamIR> params)
             throws AnalysisException {
         String result = transNodeList(params, TYPE_PARAM_SEP);
@@ -252,7 +310,54 @@ public class IsaTranslations {
         return isaUtils.isRootRec(node);
     }
 
-    public boolean isString(STypeIR node) throws AnalysisException {
+    public String initial(SExpIR node) throws AnalysisException {
+    	if (node.getClass() != AIdentifierVarExpIR.class && 
+    			(node.getType() instanceof ASetSetTypeIR || node.getType() instanceof ASeqSeqTypeIR))
+    	{
+    		// Translate the collection symbols of the actual value in the abbreviation field
+    		String initial = shift( Arrays.asList(transInit(node.getType(), node.toString().replace("[", "").replace("]", "")).split("")) );
+    		return initial;
+    	}
+    	else 
+    	{
+    		return trans(node);
+    	}
+    	
+    }
+    
+    // Hack around reverse recurion making VDMNat1 VDMSeq VDMSet appear as [{1}]
+	private String shift(List<String> s) throws AnalysisException {
+		
+	    for (int i = 0; i < (s.size()/2)-1; i++)
+	    {
+	    	Collections.swap(s, i, i + 1);
+	    	
+	    }
+	    
+	    for (int i = s.size()-1; i > (s.size()/2)+1; i--)
+	    {
+	    	Collections.swap(s, i, i - 1);
+	    	
+	    }
+	    
+	    return s.toString().replace(", ", "").substring(1, s.size()+1);
+	}
+    
+    private String transInit(STypeIR type, String val) throws AnalysisException {
+    	
+    	if (type instanceof ASetSetTypeIR)
+    	{
+    		val = transInit( ((ASetSetTypeIR) type).getSetOf(), IsaSymbolFinder.findSymbol(type, val));
+    	}
+    	else if (type instanceof ASeqSeqTypeIR)
+    	{
+    		val = transInit( ((ASeqSeqTypeIR) type).getSeqOf(), IsaSymbolFinder.findSymbol(type, val));
+    	}
+    	
+		return val;
+	}
+
+	public boolean isString(STypeIR node) throws AnalysisException {
         return node.apply(new IsSeqOfCharTypeVisitor());
     }
 
@@ -274,6 +379,23 @@ public class IsaTranslations {
 
     public boolean hasInvariant(ATypeDeclIR node) {
         return (node.getInv() != null);
+    }
+    
+    public String transTypeName(STypeIR node) {
+    	if (node instanceof ASetSetTypeIR) 
+    	{
+    		ASetSetTypeIR set = (ASetSetTypeIR) node;
+    		return IsaGen.typeGenHistoryMap.get(set);
+    	}
+    	if (node instanceof ASeqSeqTypeIR)
+    	{
+    		ASetSetTypeIR seq = (ASetSetTypeIR) node;
+    		return IsaGen.typeGenHistoryMap.get(seq);
+    	}
+    	else 
+    	{
+    		return "collectionName";
+    	}
     }
 
     public String genUnaryTypeConstructorInv(Object node, String name)
@@ -340,7 +462,8 @@ public class IsaTranslations {
 
     public String genInvariantsForUnaryTypeConstructor(Object node)
     {
-        if(node instanceof ASeqSeqTypeIR){
+       
+    	if(node instanceof ASeqSeqTypeIR){
             ASeqSeqTypeIR node_ = (ASeqSeqTypeIR) node;
             return concreteTypeInvariantForUnaryTypeConstructorInvariant(node_.getSeqOf(),"inv_SeqElems ");
         }
